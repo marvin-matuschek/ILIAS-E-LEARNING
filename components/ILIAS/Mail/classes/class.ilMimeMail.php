@@ -26,7 +26,7 @@ class ilMimeMail
     final public const string MAIL_SUBJECT_PREFIX = '[ILIAS]';
     private const string SKIN_LOGO_PATH = '/public/Customizing/skin/%s/images/logo';
     private const string SKIN_CSS_PATH = '/public/Customizing/skin/%s/mail.css';
-    private const string MAIL_CSS_PATH = 'assets/css/mail.css';
+    private const string MAIL_CSS_PATH = '/public/assets/css/mail.css';
     private const string MAIL_LOGO_PATH = '/public/assets/images/logo/HeaderIcon.svg';
     private const string ROOT_DIR_IDENTIFICATION_FILE = '/ilias_version.php';
 
@@ -330,6 +330,8 @@ class ilMimeMail
 
     private function getStyleSheetPath(string $skin, string $style): string
     {
+        $path_to_root = $this->getPathToRootDirectory();
+
         if ($skin !== 'default') {
             $locations = [
                 $skin,
@@ -337,14 +339,14 @@ class ilMimeMail
             ];
 
             foreach ($locations as $location) {
-                $custom_path = $this->getPathToRootDirectory() . sprintf(self::SKIN_CSS_PATH, $location);
+                $custom_path = $path_to_root . sprintf(self::SKIN_CSS_PATH, $location);
                 if (is_file($custom_path)) {
                     return $custom_path;
                 }
             }
         }
 
-        return self::MAIL_CSS_PATH;
+        return $path_to_root . self::MAIL_CSS_PATH;
     }
 
     private function getLogoCid(string $skin, string $style): string
