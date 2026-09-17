@@ -28,7 +28,6 @@ class ilMimeMail
     private const string SKIN_CSS_PATH = '/public/Customizing/skin/%s/mail.css';
     private const string MAIL_CSS_PATH = '/public/assets/css/mail.css';
     private const string MAIL_LOGO_PATH = '/public/assets/images/logo/HeaderIcon.svg';
-    private const string ROOT_DIR_IDENTIFICATION_FILE = '/ilias_version.php';
 
     protected static ?ilMailMimeTransport $default_transport = null;
 
