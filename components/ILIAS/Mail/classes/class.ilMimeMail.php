@@ -280,17 +280,7 @@ class ilMimeMail
 
     private function getPathToRootDirectory(): string
     {
-        $current_dir = realpath(__DIR__);
-
-        while ($current_dir !== '.') {
-            if (file_exists($current_dir . self::ROOT_DIR_IDENTIFICATION_FILE)) {
-                break;
-            }
-
-            $current_dir = dirname($current_dir);
-        }
-
-        return $current_dir;
+        return rtrim(ILIAS_ABSOLUTE_PATH, DIRECTORY_SEPARATOR);
     }
 
     private function prepareHTMLBody(): void
