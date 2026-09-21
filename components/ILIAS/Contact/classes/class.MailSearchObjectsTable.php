@@ -33,11 +33,11 @@ use Psr\Http\Message\ServerRequestInterface;
 
 class MailSearchObjectsTable implements DataRetrieval
 {
+    private readonly ServerRequestInterface|RequestInterface $request;
+    private readonly DataFactory $data_factory;
     /** @var array<string, string> */
     private readonly array $mode;
     private int $num_hidden_members = 0;
-    private ServerRequestInterface|RequestInterface $request;
-    private readonly DataFactory $data_factory;
     private bool $mailing_allowed = false;
     /** @var list<array<string, mixed>>|null */
     private ?array $records = null;
@@ -180,7 +180,14 @@ class MailSearchObjectsTable implements DataRetrieval
                 'obj_ids',
             );
 
-        $actions = [];
+        $actions = [
+            'showMembers' => $this->ui_factory->table()->action()->standard(
+                $this->lng->txt('mail_list_members'),
+                $url_builder->withParameter($action_parameter_token_copy, 'showMembers'),
+                $row_id_token,
+            ),
+        ];
+
         if ($this->context === 'mail') {
             if ($this->isMailingAllowed()) {
                 $actions['mail'] = $this->ui_factory->table()->action()->standard(
@@ -196,11 +203,6 @@ class MailSearchObjectsTable implements DataRetrieval
                 $row_id_token,
             );
         }
-        $actions['showMembers'] = $this->ui_factory->table()->action()->standard(
-            $this->lng->txt('mail_list_members'),
-            $url_builder->withParameter($action_parameter_token_copy, 'showMembers'),
-            $row_id_token,
-        );
 
         return $actions;
     }
@@ -231,30 +233,23 @@ class MailSearchObjectsTable implements DataRetrieval
             );
 
             if ($has_untrashed_references && ($can_send_mails || $this->doesExposeMembers($object))) {
-                $member_list_enabled = $object->getShowMembers();
                 $participants = ilParticipants::getInstance($object->getRefId());
-                $usr_ids = $participants->getParticipants();
 
-                foreach ($usr_ids as $key => $usr_id) {
-                    $is_active = ilObjUser::_lookupActive($usr_id);
-                    if (!$is_active) {
-                        unset($usr_ids[$key]);
-                    }
-                }
-                $usr_ids = array_values($usr_ids);
+                $usr_ids = array_filter(
+                    $participants->getParticipants(),
+                    ilObjUser::_lookupActive(...),
+                );
 
                 $hiddenMembers = false;
-                if (!$member_list_enabled) {
+                if (!$object->getShowMembers()) {
                     ++$this->num_hidden_members;
                     $hiddenMembers = true;
                 }
 
-                $path = $this->getObjectPath($object);
-
                 $this->records[$counter]['obj_id'] = $object->getId();
                 $this->records[$counter]['obj_title'] = $object->getTitle();
                 $this->records[$counter]['obj_cnt_members'] = count($usr_ids);
-                $this->records[$counter]['obj_path'] = $path;
+                $this->records[$counter]['obj_path'] = $this->getObjectPath($object);
                 $this->records[$counter]['hidden_members'] = $hiddenMembers;
 
                 ++$counter;
@@ -288,6 +283,7 @@ class MailSearchObjectsTable implements DataRetrieval
         $ref_ids = array_keys(ilObject::_getAllReferences($object->getId()));
         $ref_id = $ref_ids[0];
         $object->setRefId($ref_id);
+
         return $object;
     }
 
