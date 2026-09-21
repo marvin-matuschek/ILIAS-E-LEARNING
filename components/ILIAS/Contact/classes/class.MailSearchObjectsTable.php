@@ -180,13 +180,7 @@ class MailSearchObjectsTable implements DataRetrieval
                 'obj_ids',
             );
 
-        $actions = [
-            'showMembers' => $this->ui_factory->table()->action()->standard(
-                $this->lng->txt('mail_list_members'),
-                $url_builder->withParameter($action_parameter_token_copy, 'showMembers'),
-                $row_id_token,
-            ),
-        ];
+        $actions = [];
 
         if ($this->context === 'mail' && $this->isMailingAllowed()) {
             $actions['mail'] = $this->ui_factory->table()->action()->standard(
@@ -201,6 +195,12 @@ class MailSearchObjectsTable implements DataRetrieval
                 $row_id_token,
             );
         }
+
+        $actions['showMembers'] = $this->ui_factory->table()->action()->standard(
+            $this->lng->txt('mail_list_members'),
+            $url_builder->withParameter($action_parameter_token_copy, 'showMembers'),
+            $row_id_token,
+        );
 
         return $actions;
     }
