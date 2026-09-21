@@ -188,14 +188,12 @@ class MailSearchObjectsTable implements DataRetrieval
             ),
         ];
 
-        if ($this->context === 'mail') {
-            if ($this->isMailingAllowed()) {
-                $actions['mail'] = $this->ui_factory->table()->action()->standard(
-                    $this->lng->txt('mail_members'),
-                    $url_builder->withParameter($action_parameter_token_copy, 'mailObjects'),
-                    $row_id_token,
-                );
-            }
+        if ($this->context === 'mail' && $this->isMailingAllowed()) {
+            $actions['mail'] = $this->ui_factory->table()->action()->standard(
+                $this->lng->txt('mail_members'),
+                $url_builder->withParameter($action_parameter_token_copy, 'mailObjects'),
+                $row_id_token,
+            );
         } elseif ($this->context === 'wsp') {
             $actions['share'] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('wsp_share_with_members'),

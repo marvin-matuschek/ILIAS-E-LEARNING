@@ -18,22 +18,26 @@
 
 declare(strict_types=1);
 
-use ILIAS\Data;
+use ILIAS\Data\Factory as DataFactory;
+use ILIAS\Data\ObjectId;
 use ILIAS\Data\Order;
 use ILIAS\Data\Range;
 use ILIAS\HTTP\GlobalHttpState;
-use ILIAS\UI;
+use ILIAS\UI\Component\Table\Column\Column;
+use ILIAS\UI\Component\Table\Data;
+use ILIAS\UI\Component\Table\DataRetrieval;
 use ILIAS\UI\Component\Table\DataRowBuilder;
+use ILIAS\UI\URLBuilder;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use ILIAS\UI\Factory;
 
-class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetrieval
+class MailSearchObjectMembershipsTable implements DataRetrieval
 {
+    private readonly DataFactory $data_factory;
+    private readonly ServerRequestInterface|RequestInterface $request;
     /** @var array<string, string> */
     private readonly array $mode;
-    private readonly Data\Factory $data_factory;
-    private ServerRequestInterface|RequestInterface $request;
     /** @var list<array<string, mixed>>|null */
     private ?array $records = null;
     private bool $buddysystem_enabled;
@@ -54,14 +58,13 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         private readonly ilObjectDataCache $object_data_cache,
     ) {
         $this->request = $http->request();
-        $this->data_factory = new Data\Factory();
+        $this->data_factory = new DataFactory();
 
         $this->lng->loadLanguageModule('crs');
         $this->lng->loadLanguageModule('wsp');
         $this->lng->loadLanguageModule('buddysystem');
 
-        $this->mode = match($this->type)
-        {
+        $this->mode = match ($this->type) {
             'crs' => [
                 'checkbox' => 'search_crs',
                 'short' => 'crs',
@@ -87,7 +90,7 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         $this->mailing_allowed = $mailing_allowed;
     }
 
-    public function getComponent(): UI\Component\Table\Data
+    public function getComponent(): Data
     {
         $columns = $this->getColumns();
         $actions = $this->getActions();
@@ -140,7 +143,7 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     }
 
     /**
-     * @return array<string, UI\Component\Table\Column\Column>
+     * @return array<string, Column>
      */
     private function getColumns(): array
     {
@@ -184,26 +187,25 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
             ),
         );
 
-        $url_builder = new UI\URLBuilder($uri);
+        $url_builder = new URLBuilder($uri);
         [
             $url_builder,
             $action_parameter_token_copy,
             $row_id_token,
-        ] = $url_builder->acquireParameters(
-            $query_params_namespace,
-            'action',
-            'members_ids',
-        );
+        ] =
+            $url_builder->acquireParameters(
+                $query_params_namespace,
+                'action',
+                'members_ids',
+            );
 
         $actions = [];
-        if ($this->context === 'mail') {
-            if ($this->isMailingAllowed()) {
-                $actions['mail'] = $this->ui_factory->table()->action()->standard(
-                    $this->lng->txt('mail_members'),
-                    $url_builder->withParameter($action_parameter_token_copy, 'mailMembers'),
-                    $row_id_token,
-                );
-            }
+        if ($this->context === 'mail' && $this->isMailingAllowed()) {
+            $actions['mail'] = $this->ui_factory->table()->action()->standard(
+                $this->lng->txt('mail_members'),
+                $url_builder->withParameter($action_parameter_token_copy, 'mailMembers'),
+                $row_id_token,
+            );
         } elseif ($this->context === 'wsp') {
             $actions['share'] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('wsp_share_with_members'),
@@ -225,10 +227,11 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         $counter = 0;
 
         foreach ($this->obj_ids as $obj_id) {
-            $members_obj = ilParticipants::getInstanceByObjId($obj_id);
+            $ref_id = new ObjectId($obj_id)->toReferenceIds()[0]->toInt();
+            $members_obj = ilParticipants::getInstance($ref_id);
 
             $usr_ids = array_map(
-                'intval',
+                intval(...),
                 ilUtil::_sortIds($members_obj->getParticipants(), 'usr_data', 'lastname', 'usr_id'),
             );
             foreach ($usr_ids as $usr_id) {
@@ -242,26 +245,22 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
                     $fullname = $user->getLastname() . ', ' . $user->getFirstname();
                 }
 
-                $this->records[$counter]['members_id'] = $user->getId();
-                $this->records[$counter]['members_login'] = $user->getLogin();
-                $this->records[$counter]['members_name'] = $fullname;
-                $this->records[$counter]['members_crs_grp'] = $this->object_data_cache->lookupTitle($obj_id);
-                $this->records[$counter]['obj_id'] = $obj_id;
+                $this->records[$counter] = [
+                    'members_id' => $user->getId(),
+                    'members_login' => $user->getLogin(),
+                    'members_name' => $fullname,
+                    'members_crs_grp' => $this->object_data_cache->lookupTitle($obj_id),
+                    'obj_id' => $obj_id,
+                ];
 
                 if ('mail' === $this->context && $this->isBuddysystemEnabled()) {
                     $relation = ilBuddyList::getInstanceByGlobalUser()->getRelationByUserId($user->getId());
                     $state_name = ilStr::convertUpperCamelCaseToUnderscoreCase($relation->getState()->getName());
                     $this->records[$counter]['status'] = '';
                     if ($user->getId() !== $this->current_user_id) {
-                        if ($relation->isOwnedByActor()) {
-                            $this->records[$counter]['status'] = $this->lng->txt(
-                                'buddy_bs_state_' . $state_name . '_a',
-                            );
-                        } else {
-                            $this->records[$counter]['status'] = $this->lng->txt(
-                                'buddy_bs_state_' . $state_name . '_p',
-                            );
-                        }
+                        $this->records[$counter]['status'] = $this->lng->txt(
+                            "buddy_bs_state_$state_name" . ($relation->isOwnedByActor() ? '_a' : '_p'),
+                        );
                     }
                 }
                 ++$counter;
@@ -270,7 +269,7 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     }
 
     /**
-     * @return list<array<string, mixed>>array
+     * @return list<array<string, mixed>>
      */
     private function sortedRecords(Order $order): array
     {
