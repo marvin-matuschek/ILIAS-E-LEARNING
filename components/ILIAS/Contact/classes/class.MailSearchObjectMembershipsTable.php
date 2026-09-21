@@ -19,7 +19,12 @@
 declare(strict_types=1);
 
 use ILIAS\Data;
+use ILIAS\Data\Order;
+use ILIAS\Data\Range;
+use ILIAS\HTTP\GlobalHttpState;
 use ILIAS\UI;
+use ILIAS\UI\Component\Table\DataRowBuilder;
+use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use ILIAS\UI\Factory;
 
@@ -28,7 +33,7 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     /** @var array<string, string> */
     private readonly array $mode;
     private readonly Data\Factory $data_factory;
-    private ServerRequestInterface|\Psr\Http\Message\RequestInterface $request;
+    private ServerRequestInterface|RequestInterface $request;
     /** @var list<array<string, mixed>>|null */
     private ?array $records = null;
     private bool $buddysystem_enabled;
@@ -60,8 +65,8 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         private readonly ilCtrl $ctrl,
         private readonly ilLanguage $lng,
         private readonly Factory $ui_factory,
-        \ILIAS\HTTP\GlobalHttpState $http,
-        private readonly ilObjectDataCache $object_data_cache
+        GlobalHttpState $http,
+        private readonly ilObjectDataCache $object_data_cache,
     ) {
         $this->request = $http->request();
         $this->data_factory = new Data\Factory();
@@ -70,22 +75,25 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         $this->lng->loadLanguageModule('wsp');
         $this->lng->loadLanguageModule('buddysystem');
 
-        $mode = [];
-        if ($this->type === 'crs') {
-            $mode['checkbox'] = 'search_crs';
-            $mode['short'] = 'crs';
-            $mode['long'] = 'course';
-            $mode['lng_type'] = $this->lng->txt('course');
-            $mode['view'] = 'crs_members';
-        } elseif ($type === 'grp') {
-            $mode['checkbox'] = 'search_grp';
-            $mode['short'] = 'grp';
-            $mode['long'] = 'group';
-            $mode['lng_type'] = $this->lng->txt('group');
-            $mode['view'] = 'grp_members';
-        }
+        $this->mode = match($this->type)
+        {
+            'crs' => [
+                'checkbox' => 'search_crs',
+                'short' => 'crs',
+                'long' => 'course',
+                'lng_type' => $this->lng->txt('course'),
+                'view' => 'crs_members',
+            ],
+            'grp' => [
+                'checkbox' => 'search_grp',
+                'short' => 'grp',
+                'long' => 'group',
+                'lng_type' => $this->lng->txt('group'),
+                'view' => 'grp_members',
+            ],
+            default => [],
+        };
 
-        $this->mode = $mode;
         $this->buddysystem_enabled = ilBuddySystem::getInstance()->isEnabled();
     }
 
@@ -95,13 +103,13 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         $actions = $this->getActions();
 
         return $this->ui_factory->table()
-                                ->data(
-                                    $this->lng->txt('members'),
-                                    $columns,
-                                    $this
-                                )
-                                ->withActions($actions)
-                                ->withRequest($this->request);
+            ->data(
+                $this,
+                $this->lng->txt('members'),
+                $columns,
+            )
+            ->withActions($actions)
+            ->withRequest($this->request);
     }
 
     /**
@@ -111,24 +119,24 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     {
         $columns = [
             'members_login' => $this->ui_factory->table()
-                                                ->column()
-                                                ->text($this->lng->txt('login'))
-                                                ->withIsSortable(true),
+                ->column()
+                ->text($this->lng->txt('login'))
+                ->withIsSortable(true),
             'members_name' => $this->ui_factory->table()
-                                               ->column()
-                                               ->text($this->lng->txt('name'))
-                                               ->withIsSortable(true),
+                ->column()
+                ->text($this->lng->txt('name'))
+                ->withIsSortable(true),
             'members_crs_grp' => $this->ui_factory->table()
-                                                  ->column()
-                                                  ->text($this->lng->txt($this->mode['long']))
-                                                  ->withIsSortable(true)
+                ->column()
+                ->text($this->lng->txt($this->mode['long']))
+                ->withIsSortable(true),
         ];
 
         if ($this->isBuddysystemEnabled()) {
             $columns['status'] = $this->ui_factory->table()
-                                                  ->column()
-                                                  ->text($this->lng->txt('buddy_tbl_filter_state'))
-                                                  ->withIsSortable(true);
+                ->column()
+                ->text($this->lng->txt('buddy_tbl_filter_state'))
+                ->withIsSortable(true);
         }
 
         return $columns;
@@ -145,19 +153,19 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         $uri = $this->data_factory->uri(
             ILIAS_HTTP_PATH . '/' . $this->ctrl->getLinkTargetByClass(
                 $exec_class,
-                'handleMailSearchObjectActions'
-            )
+                'handleMailSearchObjectActions',
+            ),
         );
 
         $url_builder = new UI\URLBuilder($uri);
         [
             $url_builder,
             $action_parameter_token_copy,
-            $row_id_token
+            $row_id_token,
         ] = $url_builder->acquireParameters(
             $query_params_namespace,
             'action',
-            'members_ids'
+            'members_ids',
         );
 
         $actions = [];
@@ -166,14 +174,14 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
                 $actions['mail'] = $this->ui_factory->table()->action()->standard(
                     $this->lng->txt('mail_members'),
                     $url_builder->withParameter($action_parameter_token_copy, 'mailMembers'),
-                    $row_id_token
+                    $row_id_token,
                 );
             }
         } elseif ($this->context === 'wsp') {
             $actions['share'] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('wsp_share_with_members'),
                 $url_builder->withParameter($action_parameter_token_copy, 'shareMembers'),
-                $row_id_token
+                $row_id_token,
             );
         }
 
@@ -182,64 +190,67 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
 
     private function initRecords(): void
     {
-        if ($this->records === null) {
-            $this->records = [];
-            $counter = 0;
+        if ($this->records !== null) {
+            return;
+        }
 
-            foreach ($this->obj_ids as $obj_id) {
-                $members_obj = ilParticipants::getInstanceByObjId($obj_id);
+        $this->records = [];
+        $counter = 0;
 
-                $usr_ids = array_map(
-                    'intval',
-                    ilUtil::_sortIds($members_obj->getParticipants(), 'usr_data', 'lastname', 'usr_id')
-                );
-                foreach ($usr_ids as $usr_id) {
-                    $user = new ilObjUser($usr_id);
-                    if (!$user->getActive()) {
-                        continue;
-                    }
+        foreach ($this->obj_ids as $obj_id) {
+            $members_obj = ilParticipants::getInstanceByObjId($obj_id);
 
-                    $fullname = '';
-                    if (in_array(ilObjUser::_lookupPref($user->getId(), 'public_profile'), ['g', 'y'])) {
-                        $fullname = $user->getLastname() . ', ' . $user->getFirstname();
-                    }
+            $usr_ids = array_map(
+                'intval',
+                ilUtil::_sortIds($members_obj->getParticipants(), 'usr_data', 'lastname', 'usr_id'),
+            );
+            foreach ($usr_ids as $usr_id) {
+                $user = new ilObjUser($usr_id);
+                if (!$user->getActive()) {
+                    continue;
+                }
 
-                    $this->records[$counter]['members_id'] = $user->getId();
-                    $this->records[$counter]['members_login'] = $user->getLogin();
-                    $this->records[$counter]['members_name'] = $fullname;
-                    $this->records[$counter]['members_crs_grp'] = $this->object_data_cache->lookupTitle((int) $obj_id);
-                    $this->records[$counter]['obj_id'] = $obj_id;
+                $fullname = '';
+                if (in_array(ilObjUser::_lookupPref($user->getId(), 'public_profile'), ['g', 'y'])) {
+                    $fullname = $user->getLastname() . ', ' . $user->getFirstname();
+                }
 
-                    if ('mail' === $this->context && $this->isBuddysystemEnabled()) {
-                        $relation = ilBuddyList::getInstanceByGlobalUser()->getRelationByUserId($user->getId());
-                        $state_name = ilStr::convertUpperCamelCaseToUnderscoreCase($relation->getState()->getName());
-                        $this->records[$counter]['status'] = '';
-                        if ($user->getId() !== $this->current_user_id) {
-                            if ($relation->isOwnedByActor()) {
-                                $this->records[$counter]['status'] = $this->lng->txt(
-                                    'buddy_bs_state_' . $state_name . '_a'
-                                );
-                            } else {
-                                $this->records[$counter]['status'] = $this->lng->txt(
-                                    'buddy_bs_state_' . $state_name . '_p'
-                                );
-                            }
+                $this->records[$counter]['members_id'] = $user->getId();
+                $this->records[$counter]['members_login'] = $user->getLogin();
+                $this->records[$counter]['members_name'] = $fullname;
+                $this->records[$counter]['members_crs_grp'] = $this->object_data_cache->lookupTitle($obj_id);
+                $this->records[$counter]['obj_id'] = $obj_id;
+
+                if ('mail' === $this->context && $this->isBuddysystemEnabled()) {
+                    $relation = ilBuddyList::getInstanceByGlobalUser()->getRelationByUserId($user->getId());
+                    $state_name = ilStr::convertUpperCamelCaseToUnderscoreCase($relation->getState()->getName());
+                    $this->records[$counter]['status'] = '';
+                    if ($user->getId() !== $this->current_user_id) {
+                        if ($relation->isOwnedByActor()) {
+                            $this->records[$counter]['status'] = $this->lng->txt(
+                                'buddy_bs_state_' . $state_name . '_a',
+                            );
+                        } else {
+                            $this->records[$counter]['status'] = $this->lng->txt(
+                                'buddy_bs_state_' . $state_name . '_p',
+                            );
                         }
                     }
-                    ++$counter;
                 }
+                ++$counter;
             }
         }
     }
 
     public function getRows(
-        UI\Component\Table\DataRowBuilder $row_builder,
+        DataRowBuilder $row_builder,
         array $visible_column_ids,
-        Data\Range $range,
-        Data\Order $order,
-        ?array $filter_data,
-        ?array $additional_parameters
-    ): \Generator {
+        Range $range,
+        Order $order,
+        mixed $additional_viewcontrol_data,
+        mixed $filter_data,
+        mixed $additional_parameters,
+    ): Generator {
         $records = $this->getRecords($range, $order);
 
         foreach ($records as $record) {
@@ -249,8 +260,9 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     }
 
     public function getTotalRowCount(
-        ?array $filter_data,
-        ?array $additional_parameters
+        mixed $additional_viewcontrol_data,
+        mixed $filter_data,
+        mixed $additional_parameters,
     ): ?int {
         $this->initRecords();
 
@@ -260,7 +272,7 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     /**
      * @return list<array<string, mixed>>array
      */
-    private function sortedRecords(Data\Order $order): array
+    private function sortedRecords(Order $order): array
     {
         $records = $this->records;
         [$order_field, $order_direction] = $order->join([], fn($ret, $key, $value) => [$key, $value]);
@@ -271,7 +283,7 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     /**
      * @return list<array<string, mixed>>
      */
-    private function getRecords(Data\Range $range, Data\Order $order): array
+    private function getRecords(Range $range, Order $order): array
     {
         $this->initRecords();
         $records = $this->sortedRecords($order);
@@ -283,7 +295,7 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
      * @param list<array<string, mixed>> $records
      * @return list<array<string, mixed>>
      */
-    private function limitRecords(array $records, Data\Range $range): array
+    private function limitRecords(array $records, Range $range): array
     {
         return array_slice($records, $range->getStart(), $range->getLength());
     }
