@@ -27,10 +27,10 @@ use ILIAS\UI\Component\Table\Column\Column;
 use ILIAS\UI\Component\Table\Data;
 use ILIAS\UI\Component\Table\DataRetrieval;
 use ILIAS\UI\Component\Table\DataRowBuilder;
+use ILIAS\UI\Factory;
 use ILIAS\UI\URLBuilder;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ServerRequestInterface;
-use ILIAS\UI\Factory;
 
 class MailSearchObjectMembershipsTable implements DataRetrieval
 {
@@ -200,7 +200,7 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
             );
 
         $actions = [];
-        if ($this->context === 'mail' && $this->isMailingAllowed()) {
+        if ($this->context === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isMailingAllowed()) {
             $actions['mail'] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('mail_members'),
                 $url_builder->withParameter($action_parameter_token_copy, 'mailMembers'),
@@ -253,7 +253,7 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
                     'obj_id' => $obj_id,
                 ];
 
-                if ('mail' === $this->context && $this->isBuddysystemEnabled()) {
+                if ($this->context === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isBuddysystemEnabled()) {
                     $relation = ilBuddyList::getInstanceByGlobalUser()->getRelationByUserId($user->getId());
                     $state_name = ilStr::convertUpperCamelCaseToUnderscoreCase($relation->getState()->getName());
                     $this->records[$counter]['status'] = '';

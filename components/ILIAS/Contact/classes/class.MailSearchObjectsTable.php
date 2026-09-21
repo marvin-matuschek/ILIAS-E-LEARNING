@@ -182,7 +182,7 @@ class MailSearchObjectsTable implements DataRetrieval
 
         $actions = [];
 
-        if ($this->context === 'mail' && $this->isMailingAllowed()) {
+        if ($this->context === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isMailingAllowed()) {
             $actions['mail'] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('mail_members'),
                 $url_builder->withParameter($action_parameter_token_copy, 'mailObjects'),

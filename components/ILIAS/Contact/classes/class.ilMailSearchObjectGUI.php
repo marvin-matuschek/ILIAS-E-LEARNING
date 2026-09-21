@@ -20,43 +20,50 @@ declare(strict_types=1);
 
 use ILIAS\HTTP\GlobalHttpState;
 use ILIAS\Refinery\Factory as Refinery;
+use ILIAS\Refinery\Transformation;
+use ILIAS\UI\Factory;
+use ILIAS\UI\Renderer;
 
 abstract class ilMailSearchObjectGUI
 {
-    private ilTabsGUI $tabs;
-    protected GlobalHttpState $http;
-    protected Refinery $refinery;
+    public const string CONTEXT_MAIL = 'mail';
+
+    private readonly ilTabsGUI $tabs;
+    protected readonly GlobalHttpState $http;
+    protected readonly Refinery $refinery;
     protected ?string $view = null;
-    protected ilGlobalTemplateInterface $tpl;
-    protected ilCtrlInterface $ctrl;
-    protected ilLanguage $lng;
-    protected ilObjUser $user;
-    protected ilErrorHandling $error;
-    protected ilRbacSystem $rbacsystem;
-    protected ilRbacReview $rbacreview;
-    protected ilTree $tree;
-    protected ilObjectDataCache $cache;
-    protected ilFormatMail $umail;
-    protected bool $mailing_allowed;
-    protected \ILIAS\UI\Factory $ui_factory;
-    protected \ILIAS\UI\Renderer $ui_renderer;
+    protected readonly ilGlobalTemplateInterface $tpl;
+    protected readonly ilCtrlInterface $ctrl;
+    protected readonly ilLanguage $lng;
+    protected readonly ilObjUser $user;
+    protected readonly ilErrorHandling $error;
+    protected readonly ilRbacSystem $rbacsystem;
+    protected readonly ilRbacReview $rbacreview;
+    protected readonly ilTree $tree;
+    protected readonly ilObjectDataCache $cache;
+    protected readonly ilFormatMail $umail;
+    protected readonly bool $mailing_allowed;
+    protected readonly Factory $ui_factory;
+    protected readonly Renderer $ui_renderer;
 
     /**
-     * @param ilWorkspaceAccessHandler|ilPortfolioAccessHandler|null $wsp_access_handler
+     * @param ilPortfolioAccessHandler|ilWorkspaceAccessHandler|null $wsp_access_handler
      * @throws ilCtrlException
      */
-    public function __construct(protected $wsp_access_handler = null, protected ?int $wsp_node_id = null)
-    {
+    public function __construct(
+        protected readonly ilPortfolioAccessHandler|ilWorkspaceAccessHandler|null $wsp_access_handler = null,
+        protected readonly ?int $wsp_node_id = null,
+    ) {
         global $DIC;
 
-        $this->tpl = $DIC['tpl'];
-        $this->ctrl = $DIC['ilCtrl'];
-        $this->lng = $DIC['lng'];
-        $this->user = $DIC['ilUser'];
+        $this->tpl = $DIC->ui()->mainTemplate();
+        $this->ctrl = $DIC->ctrl();
+        $this->lng = $DIC->language();
+        $this->user = $DIC->user();
         $this->error = $DIC['ilErr'];
-        $this->rbacsystem = $DIC['rbacsystem'];
-        $this->rbacreview = $DIC['rbacreview'];
-        $this->tree = $DIC['tree'];
+        $this->rbacsystem = $DIC->rbac()->system();
+        $this->rbacreview = $DIC->rbac()->review();
+        $this->tree = $DIC->repositoryTree();
         $this->cache = $DIC['ilObjDataCache'];
         $this->http = $DIC->http();
         $this->refinery = $DIC->refinery();
@@ -67,8 +74,10 @@ abstract class ilMailSearchObjectGUI
         $this->ctrl->saveParameter($this, 'mobj_id');
         $this->ctrl->saveParameter($this, 'ref');
 
-        $mail = new ilMail($this->user->getId());
-        $this->mailing_allowed = $this->rbacsystem->checkAccess('internal_mail', $mail->getMailObjectReferenceId());
+        $this->mailing_allowed = $this->rbacsystem->checkAccess(
+            'internal_mail',
+            new ilMail($this->user->getId())->getMailObjectReferenceId(),
+        );
 
         $this->umail = new ilFormatMail($this->user->getId());
 
@@ -85,7 +94,7 @@ abstract class ilMailSearchObjectGUI
 
     private function getContext(): string
     {
-        $context = 'mail';
+        $context = self::CONTEXT_MAIL;
         if ($this->http->wrapper()->query()->has('ref')) {
             $context = $this->http->wrapper()->query()->retrieve('ref', $this->refinery->kindlyTo()->string());
         }
@@ -95,13 +104,10 @@ abstract class ilMailSearchObjectGUI
 
     private function isLocalRoleTitle(string $title): bool
     {
-        foreach ($this->getLocalDefaultRolePrefixes() as $local_role_prefix) {
-            if (str_starts_with($title, $local_role_prefix)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_any(
+            $this->getLocalDefaultRolePrefixes(),
+            static fn(string $local_role_prefix): bool => str_starts_with($title, $local_role_prefix),
+        );
     }
 
     abstract protected function getObjectType(): string;
@@ -111,7 +117,7 @@ abstract class ilMailSearchObjectGUI
      */
     abstract protected function getLocalDefaultRolePrefixes(): array;
 
-    protected function getRequestValue(string $key, \ILIAS\Refinery\Transformation $trafo, $default = null)
+    protected function getRequestValue(string $key, Transformation $trafo, $default = null)
     {
         $value = $default;
         if ($this->http->wrapper()->query()->has($key)) {
@@ -203,7 +209,7 @@ abstract class ilMailSearchObjectGUI
                 $roles = $this->rbacreview->getAssignableChildRoles($ref_id);
                 foreach ($roles as $role) {
                     if ($this->isLocalRoleTitle($role['title'])) {
-                        $recipient = (new ilRoleMailboxAddress($role['obj_id']))->value();
+                        $recipient = new ilRoleMailboxAddress($role['obj_id'])->value();
                         if (!$this->umail->existsRecipient($recipient, (string) $mail_data['rcp_to'])) {
                             $members[] = $recipient;
                         }
@@ -359,10 +365,12 @@ abstract class ilMailSearchObjectGUI
             $this->cache
         );
 
-        if ($context === 'mail') {
-            $mail = new ilMail($this->user->getId());
+        if ($context === self::CONTEXT_MAIL) {
             $table->setMailingAllowed(
-                $this->rbacsystem->checkAccess('internal_mail', $mail->getMailObjectReferenceId())
+                $this->rbacsystem->checkAccess(
+                    'internal_mail',
+                    new ilMail($this->user->getId())->getMailObjectReferenceId(),
+                ),
             );
         }
 
@@ -407,10 +415,12 @@ abstract class ilMailSearchObjectGUI
             $this->rbacsystem
         );
 
-        if ($context === 'mail') {
-            $mail = new ilMail($this->user->getId());
+        if ($context === self::CONTEXT_MAIL) {
             $table->setMailingAllowed(
-                $this->rbacsystem->checkAccess('internal_mail', $mail->getMailObjectReferenceId())
+                $this->rbacsystem->checkAccess(
+                    'internal_mail',
+                    new ilMail($this->user->getId())->getMailObjectReferenceId(),
+                )
             );
         }
 
