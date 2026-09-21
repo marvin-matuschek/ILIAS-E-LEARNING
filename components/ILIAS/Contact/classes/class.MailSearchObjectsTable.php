@@ -42,11 +42,6 @@ class MailSearchObjectsTable implements DataRetrieval
     /** @var list<array<string, mixed>>|null */
     private ?array $records = null;
 
-    public function setMailingAllowed(bool $mailing_allowed): void
-    {
-        $this->mailing_allowed = $mailing_allowed;
-    }
-
     public function __construct(
         private readonly ilObjUser $user,
         private readonly string $type,
@@ -83,6 +78,11 @@ class MailSearchObjectsTable implements DataRetrieval
             ],
             default => [],
         };
+    }
+
+    public function setMailingAllowed(bool $mailing_allowed): void
+    {
+        $this->mailing_allowed = $mailing_allowed;
     }
 
     public function getComponent(): Data

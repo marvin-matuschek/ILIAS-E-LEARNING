@@ -39,21 +39,6 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
     private bool $buddysystem_enabled;
     private bool $mailing_allowed = false;
 
-    private function isMailingAllowed(): bool
-    {
-        return $this->mailing_allowed;
-    }
-
-    public function setMailingAllowed(bool $mailing_allowed): void
-    {
-        $this->mailing_allowed = $mailing_allowed;
-    }
-
-    private function isBuddysystemEnabled(): bool
-    {
-        return $this->buddysystem_enabled;
-    }
-
     /**
      * @param int[] $obj_ids
      */
@@ -97,6 +82,11 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
         $this->buddysystem_enabled = ilBuddySystem::getInstance()->isEnabled();
     }
 
+    public function setMailingAllowed(bool $mailing_allowed): void
+    {
+        $this->mailing_allowed = $mailing_allowed;
+    }
+
     public function getComponent(): UI\Component\Table\Data
     {
         $columns = $this->getColumns();
@@ -110,6 +100,43 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
             )
             ->withActions($actions)
             ->withRequest($this->request);
+    }
+
+    public function getRows(
+        DataRowBuilder $row_builder,
+        array $visible_column_ids,
+        Range $range,
+        Order $order,
+        mixed $additional_viewcontrol_data,
+        mixed $filter_data,
+        mixed $additional_parameters,
+    ): Generator {
+        $records = $this->getRecords($range, $order);
+
+        foreach ($records as $record) {
+            $row_id = (string) $record['members_id'];
+            yield $row_builder->buildDataRow($row_id, $record);
+        }
+    }
+
+    public function getTotalRowCount(
+        mixed $additional_viewcontrol_data,
+        mixed $filter_data,
+        mixed $additional_parameters,
+    ): ?int {
+        $this->initRecords();
+
+        return count($this->records);
+    }
+
+    private function isMailingAllowed(): bool
+    {
+        return $this->mailing_allowed;
+    }
+
+    private function isBuddysystemEnabled(): bool
+    {
+        return $this->buddysystem_enabled;
     }
 
     /**
@@ -240,33 +267,6 @@ class MailSearchObjectMembershipsTable implements UI\Component\Table\DataRetriev
                 ++$counter;
             }
         }
-    }
-
-    public function getRows(
-        DataRowBuilder $row_builder,
-        array $visible_column_ids,
-        Range $range,
-        Order $order,
-        mixed $additional_viewcontrol_data,
-        mixed $filter_data,
-        mixed $additional_parameters,
-    ): Generator {
-        $records = $this->getRecords($range, $order);
-
-        foreach ($records as $record) {
-            $row_id = (string) $record['members_id'];
-            yield $row_builder->buildDataRow($row_id, $record);
-        }
-    }
-
-    public function getTotalRowCount(
-        mixed $additional_viewcontrol_data,
-        mixed $filter_data,
-        mixed $additional_parameters,
-    ): ?int {
-        $this->initRecords();
-
-        return count($this->records);
     }
 
     /**
