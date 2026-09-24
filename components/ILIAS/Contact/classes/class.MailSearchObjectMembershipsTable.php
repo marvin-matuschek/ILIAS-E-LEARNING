@@ -23,6 +23,7 @@ use ILIAS\Data\ObjectId;
 use ILIAS\Data\Order;
 use ILIAS\Data\Range;
 use ILIAS\HTTP\GlobalHttpState;
+use ILIAS\Refinery\Factory as Refinery;
 use ILIAS\UI\Component\Table\Column\Column;
 use ILIAS\UI\Component\Table\Data;
 use ILIAS\UI\Component\Table\DataRetrieval;
@@ -36,8 +37,6 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
 {
     private readonly DataFactory $data_factory;
     private readonly ServerRequestInterface|RequestInterface $request;
-    /** @var array<string, string> */
-    private readonly array $mode;
     /** @var list<array<string, mixed>>|null */
     private ?array $records = null;
     private bool $buddysystem_enabled;
@@ -48,39 +47,21 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
      */
     public function __construct(
         private readonly array $obj_ids,
-        private readonly string $type,
-        private readonly string $context,
+        private readonly ilMailSearchObjectGUI $parent_gui,
         private readonly int $current_user_id,
         private readonly ilCtrl $ctrl,
         private readonly ilLanguage $lng,
         private readonly Factory $ui_factory,
-        GlobalHttpState $http,
+        private readonly GlobalHttpState $http,
+        private readonly Refinery $refinery,
         private readonly ilObjectDataCache $object_data_cache,
     ) {
-        $this->request = $http->request();
+        $this->request = $this->http->request();
         $this->data_factory = new DataFactory();
 
         $this->lng->loadLanguageModule('crs');
         $this->lng->loadLanguageModule('wsp');
         $this->lng->loadLanguageModule('buddysystem');
-
-        $this->mode = match ($this->type) {
-            'crs' => [
-                'checkbox' => 'search_crs',
-                'short' => 'crs',
-                'long' => 'course',
-                'lng_type' => $this->lng->txt('course'),
-                'view' => 'crs_members',
-            ],
-            'grp' => [
-                'checkbox' => 'search_grp',
-                'short' => 'grp',
-                'long' => 'group',
-                'lng_type' => $this->lng->txt('group'),
-                'view' => 'grp_members',
-            ],
-            default => [],
-        };
 
         $this->buddysystem_enabled = ilBuddySystem::getInstance()->isEnabled();
     }
@@ -92,16 +73,13 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
 
     public function getComponent(): Data
     {
-        $columns = $this->getColumns();
-        $actions = $this->getActions();
-
         return $this->ui_factory->table()
             ->data(
                 $this,
                 $this->lng->txt('members'),
-                $columns,
+                $this->getColumns(),
             )
-            ->withActions($actions)
+            ->withActions($this->getActions())
             ->withRequest($this->request);
     }
 
@@ -158,7 +136,7 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
                 ->withIsSortable(true),
             'members_crs_grp' => $this->ui_factory->table()
                 ->column()
-                ->text($this->lng->txt($this->mode['long']))
+                ->text($this->parent_gui->getObjectTypeLabel())
                 ->withIsSortable(true),
         ];
 
@@ -178,12 +156,11 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
     private function getActions(): array
     {
         $query_params_namespace = ['contact', 'mailinglist', 'search'];
-        $exec_class = $this->type == 'crs' ? ilMailSearchCoursesGUI::class : ilMailSearchGroupsGUI::class;
 
         $uri = $this->data_factory->uri(
-            ILIAS_HTTP_PATH . '/' . $this->ctrl->getLinkTargetByClass(
-                $exec_class,
-                'handleMailSearchObjectActions',
+            ILIAS_HTTP_PATH . '/' . $this->ctrl->getLinkTarget(
+                $this->parent_gui,
+                ilMailSearchObjectGUI::CMD_HANDLE_MAIL_SEARCH_OBJECT_ACTIONS,
             ),
         );
 
@@ -192,29 +169,57 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
             $url_builder,
             $action_parameter_token_copy,
             $row_id_token,
+            $obj_ids_token,
         ] =
             $url_builder->acquireParameters(
                 $query_params_namespace,
                 'action',
                 'members_ids',
+                'obj_ids',
             );
 
+        $url_builder = $url_builder->withParameter(
+            $obj_ids_token,
+            $this->objIdsForActionUrl(),
+        );
+
         $actions = [];
-        if ($this->context === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isMailingAllowed()) {
-            $actions['mail'] = $this->ui_factory->table()->action()->standard(
+        if ($this->parent_gui->getContext() === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isMailingAllowed()) {
+            $actions[ilMailSearchObjectGUI::ACTION_MAIL_MEMBERS] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('mail_members'),
-                $url_builder->withParameter($action_parameter_token_copy, 'mailMembers'),
+                $url_builder->withParameter($action_parameter_token_copy, ilMailSearchObjectGUI::ACTION_MAIL_MEMBERS),
                 $row_id_token,
             );
-        } elseif ($this->context === 'wsp') {
-            $actions['share'] = $this->ui_factory->table()->action()->standard(
+        } elseif ($this->parent_gui->getContext() === ilMailSearchObjectGUI::CONTEXT_WORKSPACE) {
+            $actions[ilMailSearchObjectGUI::ACTION_SHARE_MEMBERS] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('wsp_share_with_members'),
-                $url_builder->withParameter($action_parameter_token_copy, 'shareMembers'),
+                $url_builder->withParameter($action_parameter_token_copy, ilMailSearchObjectGUI::ACTION_SHARE_MEMBERS),
                 $row_id_token,
             );
         }
 
         return $actions;
+    }
+
+    /**
+     * @return string|list<string>
+     */
+    private function objIdsForActionUrl(): string|array
+    {
+        return $this->http->wrapper()->query()->retrieve(
+            'contact_mailinglist_search_obj_ids',
+            $this->refinery->byTrying([
+                $this->refinery->custom()->transformation(
+                    static function (mixed $value): array {
+                        if ($value === ['ALL_OBJECTS']) {
+                            return ['ALL_OBJECTS'];
+                        }
+                        throw new Exception('not all objects');
+                    }
+                ),
+                $this->refinery->always(implode(',', array_map(strval(...), $this->obj_ids))),
+            ])
+        );
     }
 
     private function initRecords(): void
@@ -253,7 +258,7 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
                     'obj_id' => $obj_id,
                 ];
 
-                if ($this->context === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isBuddysystemEnabled()) {
+                if ($this->parent_gui->getContext() === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isBuddysystemEnabled()) {
                     $relation = ilBuddyList::getInstanceByGlobalUser()->getRelationByUserId($user->getId());
                     $state_name = ilStr::convertUpperCamelCaseToUnderscoreCase($relation->getState()->getName());
                     $this->records[$counter]['status'] = '';
@@ -274,7 +279,7 @@ class MailSearchObjectMembershipsTable implements DataRetrieval
     private function sortedRecords(Order $order): array
     {
         $records = $this->records;
-        [$order_field, $order_direction] = $order->join([], fn($ret, $key, $value) => [$key, $value]);
+        [$order_field, $order_direction] = $order->join([], static fn($ret, $key, $value): array => [$key, $value]);
 
         return ilArrayUtil::stableSortArray($records, $order_field, strtolower($order_direction));
     }

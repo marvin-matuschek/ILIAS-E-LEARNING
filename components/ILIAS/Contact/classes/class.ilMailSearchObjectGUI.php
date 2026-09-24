@@ -18,15 +18,25 @@
 
 declare(strict_types=1);
 
+use ILIAS\Data\ObjectId;
 use ILIAS\HTTP\GlobalHttpState;
 use ILIAS\Refinery\Factory as Refinery;
 use ILIAS\Refinery\Transformation;
 use ILIAS\UI\Factory;
 use ILIAS\UI\Renderer;
 
-abstract class ilMailSearchObjectGUI
+abstract class ilMailSearchObjectGUI implements ilCtrlSecurityInterface
 {
     public const string CONTEXT_MAIL = 'mail';
+    public const string CONTEXT_WORKSPACE = 'wsp';
+    public const string CMD_SHOW_MY_OBJECTS = 'showMyObjects';
+    public const string CMD_HANDLE_MAIL_SEARCH_OBJECT_ACTIONS = 'handleMailSearchObjectActions';
+    public const string CMD_CANCEL = 'cancel';
+    public const string ACTION_MAIL_OBJECTS = 'mailObjects';
+    public const string ACTION_MAIL_MEMBERS = 'mailMembers';
+    public const string ACTION_SHARE_OBJECTS = 'shareObjects';
+    public const string ACTION_SHARE_MEMBERS = 'shareMembers';
+    public const string ACTION_SHOW_MEMBERS = 'showMembers';
 
     private readonly ilTabsGUI $tabs;
     protected readonly GlobalHttpState $http;
@@ -45,9 +55,9 @@ abstract class ilMailSearchObjectGUI
     protected readonly bool $mailing_allowed;
     protected readonly Factory $ui_factory;
     protected readonly Renderer $ui_renderer;
+    private ?string $context = null;
 
     /**
-     * @param ilPortfolioAccessHandler|ilWorkspaceAccessHandler|null $wsp_access_handler
      * @throws ilCtrlException
      */
     public function __construct(
@@ -84,38 +94,85 @@ abstract class ilMailSearchObjectGUI
         $this->lng->loadLanguageModule('mail');
     }
 
-    private function isDefaultRequestContext(): bool
-    {
-        return (
-            !$this->http->wrapper()->query()->has('ref') ||
-            $this->http->wrapper()->query()->retrieve('ref', $this->refinery->kindlyTo()->string()) !== 'wsp'
-        );
-    }
+    abstract public function getObjectType(): string;
 
-    private function getContext(): string
-    {
-        $context = self::CONTEXT_MAIL;
-        if ($this->http->wrapper()->query()->has('ref')) {
-            $context = $this->http->wrapper()->query()->retrieve('ref', $this->refinery->kindlyTo()->string());
-        }
+    abstract public function getObjectTypeLabel(): string;
 
-        return $context;
-    }
+    abstract public function getSearchTableTitle(): string;
 
-    private function isLocalRoleTitle(string $title): bool
-    {
-        return array_any(
-            $this->getLocalDefaultRolePrefixes(),
-            static fn(string $local_role_prefix): bool => str_starts_with($title, $local_role_prefix),
-        );
-    }
-
-    abstract protected function getObjectType(): string;
+    abstract public function doesExposeMembers(ilObject $object): bool;
 
     /**
      * @return string[] Returns an array like ['il_crs_member_', 'il_crs_tutor', ...]
      */
     abstract protected function getLocalDefaultRolePrefixes(): array;
+
+    public function getUnsafeGetCommands(): array
+    {
+        return [
+            self::CMD_HANDLE_MAIL_SEARCH_OBJECT_ACTIONS,
+        ];
+    }
+
+    public function getSafePostCommands(): array
+    {
+        return [];
+    }
+
+    /**
+     * @throws ilCtrlException
+     */
+    public function executeCommand(): bool
+    {
+        $forward_class = $this->ctrl->getNextClass($this) ?? '';
+        switch (strtolower($forward_class)) {
+            case strtolower(ilBuddySystemGUI::class):
+                if (!ilBuddySystem::getInstance()->isEnabled()) {
+                    $this->error->raiseError($this->lng->txt('msg_no_perm_read'), $this->error->MESSAGE);
+                }
+
+                $obj_ids = $this->retrieveObjectIdsFromQuery();
+                $this->ctrl->setParameter($this, 'contact_mailinglist_search_action', self::ACTION_SHOW_MEMBERS);
+                if ($obj_ids !== []) {
+                    $this->ctrl->setParameter(
+                        $this,
+                        'contact_mailinglist_search_obj_ids',
+                        implode(',', $obj_ids)
+                    );
+                }
+                $this->ctrl->setReturn($this, self::CMD_HANDLE_MAIL_SEARCH_OBJECT_ACTIONS);
+                $this->ctrl->forwardCommand(new ilBuddySystemGUI());
+                break;
+
+            default:
+                match ($this->ctrl->getCmd()) {
+                    self::CMD_HANDLE_MAIL_SEARCH_OBJECT_ACTIONS => $this->handleMailSearchObjectActions(),
+                    self::CMD_CANCEL => $this->cancel(),
+                    default => $this->showMyObjects(),
+                };
+                break;
+        }
+
+        return true;
+    }
+
+    public function getContext(): string
+    {
+        if ($this->context === null) {
+            $context = $this->http->wrapper()->query()->retrieve(
+                'ref',
+                $this->refinery->byTrying([
+                    $this->refinery->kindlyTo()->string(),
+                    $this->refinery->always(self::CONTEXT_MAIL)
+                ]),
+            );
+            $this->context = in_array($context, [self::CONTEXT_MAIL, self::CONTEXT_WORKSPACE], true)
+                ? $context
+                : self::CONTEXT_MAIL;
+        }
+
+        return $this->context;
+    }
 
     protected function getRequestValue(string $key, Transformation $trafo, $default = null)
     {
@@ -136,6 +193,10 @@ abstract class ilMailSearchObjectGUI
      */
     protected function addPermission(array $a_obj_ids): void
     {
+        if ($this->wsp_access_handler === null || $this->wsp_node_id === null) {
+            $this->error->raiseError($this->lng->txt('msg_no_perm_read'), $this->error->MESSAGE);
+        }
+
         $added = $this->wsp_access_handler->addMissingPermissionForObjects($this->wsp_node_id, $a_obj_ids);
 
         if ($added) {
@@ -144,32 +205,224 @@ abstract class ilMailSearchObjectGUI
         $this->ctrl->redirectByClass(ilWorkspaceAccessGUI::class, 'share');
     }
 
+    private function mailMembers(): void
+    {
+        $members = [];
+
+        $usr_ids = $this->resolveUserIds(
+            $this->retrieveIdsFromQuery('contact_mailinglist_search_members_ids')
+        );
+
+        $mail_data = $this->umail->retrieveFromStage();
+        foreach ($usr_ids as $usr_id) {
+            $login = ilObjUser::_lookupLogin($usr_id);
+            if (!$this->umail->existsRecipient($login, (string) $mail_data['rcp_to'])) {
+                $members[] = $login;
+            }
+        }
+
+        $mail_data = $this->umail->appendSearchResult(array_unique($members), 'to');
+
+        $this->umail->persistToStage(
+            (int) $mail_data['user_id'],
+            $mail_data['rcp_to'],
+            $mail_data['rcp_cc'],
+            $mail_data['rcp_bcc'],
+            $mail_data['m_subject'],
+            $mail_data['m_message'],
+            $mail_data['attachments'],
+            $mail_data['use_placeholders'],
+            $mail_data['tpl_ctx_id'],
+            $mail_data['tpl_ctx_params']
+        );
+
+        $this->ctrl->setParameterByClass(ilMailGUI::class, 'type', ilMailFormGUI::MAIL_FORM_TYPE_SEARCH_RESULT);
+        $this->ctrl->redirectByClass(ilMailGUI::class);
+    }
+
+    private function cancel(): void
+    {
+        $view = '';
+        if ($this->http->wrapper()->query()->has('view')) {
+            $view = $this->http->wrapper()->query()->retrieve('view', $this->refinery->kindlyTo()->string());
+        }
+
+        if ($view === 'myobjects' && $this->isDefaultRequestContext()) {
+            $this->ctrl->returnToParent($this);
+        } else {
+            $this->showMyObjects();
+        }
+    }
+
+    private function showMembers(): void
+    {
+        $this->tabs->clearTargets();
+        $this->tabs->setBackTarget(
+            $this->lng->txt('back'),
+            $this->ctrl->getLinkTarget($this, self::CMD_SHOW_MY_OBJECTS)
+        );
+
+        $obj_ids = $this->retrieveObjectIdsFromQuery();
+
+        if ($obj_ids === []) {
+            $this->tpl->setOnScreenMessage('info', $this->lng->txt('mail_select_crs'));
+            $this->showMyObjects();
+
+            return;
+        }
+
+        foreach ($obj_ids as $obj_id) {
+            /** @var ilObjGroup|ilObjCourse $object */
+            $object = ilObjectFactory::getInstanceByObjId($obj_id);
+
+            $ref_ids = array_keys(ilObject::_getAllReferences($object->getId()));
+            $ref_id = $ref_ids[0];
+            $object->setRefId($ref_id);
+
+            if (!$this->doesExposeMembers($object)) {
+                $this->tpl->setOnScreenMessage(
+                    'info',
+                    $this->lng->txt('mail_crs_list_members_not_available_for_at_least_one_crs')
+                );
+                $this->showMyObjects();
+
+                return;
+            }
+        }
+
+        $this->lng->loadLanguageModule($this->getObjectType());
+
+        $this->tpl->setTitle($this->lng->txt('mail_addressbook'));
+
+        $this->ctrl->setParameter($this, 'view', $this->getObjectType() . '_members');
+        if ($obj_ids !== []) {
+            $this->ctrl->setParameter($this, 'search_' . $this->getObjectType(), implode(',', $obj_ids));
+        }
+        $this->tpl->setVariable('ACTION', $this->ctrl->getFormAction($this));
+        $this->ctrl->clearParameters($this);
+        $this->lng->loadLanguageModule($this->getObjectType());
+
+        $searchTpl = new ilTemplate(
+            'tpl.mail_search_template.html',
+            true,
+            true,
+            'components/ILIAS/Contact'
+        );
+
+        $table = new MailSearchObjectMembershipsTable(
+            $obj_ids,
+            $this,
+            $this->user->getId(),
+            $this->ctrl,
+            $this->lng,
+            $this->ui_factory,
+            $this->http,
+            $this->refinery,
+            $this->cache
+        );
+
+        if ($this->getContext() === self::CONTEXT_MAIL) {
+            $table->setMailingAllowed(
+                $this->rbacsystem->checkAccess(
+                    'internal_mail',
+                    new ilMail($this->user->getId())->getMailObjectReferenceId(),
+                ),
+            );
+        }
+
+        if (count($obj_ids) > 0) {
+            $searchTpl->setVariable('TXT_MARKED_ENTRIES', $this->lng->txt('marked_entries'));
+        }
+
+        $searchTpl->setVariable('TABLE', $this->ui_renderer->render($table->getComponent()));
+        $this->tpl->setContent($searchTpl->get());
+
+        if ($this->isDefaultRequestContext()) {
+            $this->tpl->printToStdout();
+        }
+    }
+
+    private function showMyObjects(): void
+    {
+        $this->tpl->setTitle($this->lng->txt('mail_addressbook'));
+
+        $search_tpl = new ilTemplate(
+            'tpl.mail_search_template.html',
+            true,
+            true,
+            'components/ILIAS/Contact'
+        );
+
+        $this->lng->loadLanguageModule('crs');
+
+        $table = new MailSearchObjectsTable(
+            $this->user,
+            $this,
+            $this->ctrl,
+            $this->lng,
+            $this->ui_factory,
+            $this->http,
+            $this->tree,
+        );
+
+        if ($this->getContext() === self::CONTEXT_MAIL) {
+            $table->setMailingAllowed(
+                $this->rbacsystem->checkAccess(
+                    'internal_mail',
+                    new ilMail($this->user->getId())->getMailObjectReferenceId(),
+                )
+            );
+        }
+
+        if ($table->getNumHiddenMembers() > 0) {
+            $search_tpl->setCurrentBlock('caption_block');
+            $search_tpl->setVariable(
+                'TXT_LIST_MEMBERS_NOT_AVAILABLE',
+                $this->lng->txt('mail_crs_list_members_not_available')
+            );
+            $search_tpl->parseCurrentBlock();
+        }
+
+        $search_tpl->setVariable('TXT_MARKED_ENTRIES', $this->lng->txt('marked_entries'));
+        $search_tpl->setVariable('TABLE', $this->ui_renderer->render($table->getComponent()));
+        $this->tpl->setContent($search_tpl->get());
+
+        if ($this->isDefaultRequestContext()) {
+            $this->tpl->printToStdout();
+        }
+    }
+
+    private function isDefaultRequestContext(): bool
+    {
+        return $this->getContext() !== self::CONTEXT_WORKSPACE;
+    }
+
+    private function isLocalRoleTitle(string $title): bool
+    {
+        return array_any(
+            $this->getLocalDefaultRolePrefixes(),
+            static fn(string $local_role_prefix): bool => str_starts_with($title, $local_role_prefix),
+        );
+    }
+
     private function shareObjects(): void
     {
-        $obj_ids = $this->http->wrapper()->query()->retrieve(
-            'contact_mailinglist_search_obj_ids',
-            $this->refinery->byTrying([
-                $this->refinery->kindlyTo()->dictOf($this->refinery->kindlyTo()->int()),
-                $this->refinery->always([])
-            ])
+        $obj_ids = $this->resolveObjectIds(
+            $this->retrieveIdsFromQuery('contact_mailinglist_search_obj_ids')
         );
 
         if ($obj_ids !== []) {
             $this->addPermission($obj_ids);
         } else {
-            $this->tpl->setOnScreenMessage('info', $this->lng->txt('mail_select_course'));
+            $this->tpl->setOnScreenMessage('info', $this->lng->txt('mail_select_crs'));
             $this->showMyObjects();
         }
     }
 
     private function shareMembers(): void
     {
-        $usr_ids = $this->http->wrapper()->query()->retrieve(
-            'contact_mailinglist_search_members_ids',
-            $this->refinery->byTrying([
-                $this->refinery->kindlyTo()->listOf($this->refinery->kindlyTo()->int()),
-                $this->refinery->always([])
-            ])
+        $usr_ids = $this->resolveUserIds(
+            $this->retrieveIdsFromQuery('contact_mailinglist_search_members_ids')
         );
 
         if ($usr_ids !== []) {
@@ -185,12 +438,8 @@ abstract class ilMailSearchObjectGUI
         $members = [];
         $mail_data = $this->umail->retrieveFromStage();
 
-        $obj_ids = $this->http->wrapper()->query()->retrieve(
-            'contact_mailinglist_search_obj_ids',
-            $this->refinery->byTrying([
-                $this->refinery->kindlyTo()->listOf($this->refinery->kindlyTo()->int()),
-                $this->refinery->always([])
-            ])
+        $obj_ids = $this->resolveObjectIds(
+            $this->retrieveIdsFromQuery('contact_mailinglist_search_obj_ids')
         );
 
         foreach ($obj_ids as $obj_id) {
@@ -236,237 +485,8 @@ abstract class ilMailSearchObjectGUI
             $mail_data['tpl_ctx_params']
         );
 
-        $this->ctrl->redirectToURL('ilias.php?baseClass=ilMailGUI&type=search_res');
-    }
-
-    public function mailMembers(): void
-    {
-        $members = [];
-
-        $usr_ids = $this->http->wrapper()->query()->retrieve(
-            'contact_mailinglist_search_members_ids',
-            $this->refinery->byTrying([
-                $this->refinery->kindlyTo()->listOf($this->refinery->kindlyTo()->int()),
-                $this->refinery->always([])
-            ])
-        );
-
-        $mail_data = $this->umail->retrieveFromStage();
-        foreach ($usr_ids as $usr_id) {
-            $login = ilObjUser::_lookupLogin($usr_id);
-            if (!$this->umail->existsRecipient($login, (string) $mail_data['rcp_to'])) {
-                $members[] = $login;
-            }
-        }
-
-        $mail_data = $this->umail->appendSearchResult(array_unique($members), 'to');
-
-        $this->umail->persistToStage(
-            (int) $mail_data['user_id'],
-            $mail_data['rcp_to'],
-            $mail_data['rcp_cc'],
-            $mail_data['rcp_bcc'],
-            $mail_data['m_subject'],
-            $mail_data['m_message'],
-            $mail_data['attachments'],
-            $mail_data['use_placeholders'],
-            $mail_data['tpl_ctx_id'],
-            $mail_data['tpl_ctx_params']
-        );
-
-        $this->ctrl->redirectToURL('ilias.php?baseClass=ilMailGUI&type=search_res');
-    }
-
-    public function cancel(): void
-    {
-        $view = '';
-        if ($this->http->wrapper()->query()->has('view')) {
-            $view = $this->http->wrapper()->query()->retrieve('view', $this->refinery->kindlyTo()->string());
-        }
-
-        if ($view === 'myobjects' && $this->isDefaultRequestContext()) {
-            $this->ctrl->returnToParent($this);
-        } else {
-            $this->showMyObjects();
-        }
-    }
-
-    public function showMembers(): void
-    {
-        $this->tabs->clearTargets();
-        $this->tabs->setBackTarget(
-            $this->lng->txt('back'),
-            $this->ctrl->getLinkTarget($this, 'showMyObjects')
-        );
-
-        $obj_ids = $this->http->wrapper()->query()->retrieve(
-            'contact_mailinglist_search_obj_ids',
-            $this->refinery->byTrying([
-                $this->refinery->kindlyTo()->listOf($this->refinery->kindlyTo()->int()),
-                $this->refinery->always([])
-            ])
-        );
-
-        if ($obj_ids === []) {
-            $this->tpl->setOnScreenMessage('info', $this->lng->txt('mail_select_course'));
-            $this->showMyObjects();
-
-            return;
-        }
-
-        foreach ($obj_ids as $obj_id) {
-            /** @var ilObjGroup|ilObjCourse $object */
-            $object = ilObjectFactory::getInstanceByObjId($obj_id);
-
-            $ref_ids = array_keys(ilObject::_getAllReferences($object->getId()));
-            $ref_id = $ref_ids[0];
-            $object->setRefId($ref_id);
-
-            if (!$this->doesExposeMembers($object)) {
-                $this->tpl->setOnScreenMessage(
-                    'info',
-                    $this->lng->txt('mail_crs_list_members_not_available_for_at_least_one_crs')
-                );
-                $this->showMyObjects();
-
-                return;
-            }
-        }
-
-        $this->lng->loadLanguageModule($this->getObjectType());
-
-        $this->tpl->setTitle($this->lng->txt('mail_addressbook'));
-
-        $this->ctrl->setParameter($this, 'view', $this->getObjectType() . '_members');
-        if ($obj_ids !== []) {
-            $this->ctrl->setParameter($this, 'search_' . $this->getObjectType(), implode(',', $obj_ids));
-        }
-        $this->tpl->setVariable('ACTION', $this->ctrl->getFormAction($this));
-        $this->ctrl->clearParameters($this);
-        $this->lng->loadLanguageModule($this->getObjectType());
-
-        $context = $this->getContext();
-        $searchTpl = new ilTemplate(
-            'tpl.mail_search_template.html',
-            true,
-            true,
-            'components/ILIAS/Contact'
-        );
-
-        $table = new MailSearchObjectMembershipsTable(
-            $obj_ids,
-            $this->getObjectType(),
-            $context,
-            $this->user->getId(),
-            $this->ctrl,
-            $this->lng,
-            $this->ui_factory,
-            $this->http,
-            $this->cache
-        );
-
-        if ($context === self::CONTEXT_MAIL) {
-            $table->setMailingAllowed(
-                $this->rbacsystem->checkAccess(
-                    'internal_mail',
-                    new ilMail($this->user->getId())->getMailObjectReferenceId(),
-                ),
-            );
-        }
-
-        if (count($obj_ids) > 0) {
-            $searchTpl->setVariable('TXT_MARKED_ENTRIES', $this->lng->txt('marked_entries'));
-        }
-
-        $searchTpl->setVariable('TABLE', $this->ui_renderer->render($table->getComponent()));
-        $this->tpl->setContent($searchTpl->get());
-
-        if ($this->isDefaultRequestContext()) {
-            $this->tpl->printToStdout();
-        }
-    }
-
-    abstract protected function doesExposeMembers(ilObject $object): bool;
-
-    public function showMyObjects(): void
-    {
-        $this->tpl->setTitle($this->lng->txt('mail_addressbook'));
-
-        $searchTpl = new ilTemplate(
-            'tpl.mail_search_template.html',
-            true,
-            true,
-            'components/ILIAS/Contact'
-        );
-
-        $this->lng->loadLanguageModule('crs');
-
-        $context = $this->getContext();
-
-        $table = new MailSearchObjectsTable(
-            $this->user,
-            $this->getObjectType(),
-            $context,
-            $this->ctrl,
-            $this->lng,
-            $this->ui_factory,
-            $this->http,
-            $this->tree,
-            $this->rbacsystem
-        );
-
-        if ($context === self::CONTEXT_MAIL) {
-            $table->setMailingAllowed(
-                $this->rbacsystem->checkAccess(
-                    'internal_mail',
-                    new ilMail($this->user->getId())->getMailObjectReferenceId(),
-                )
-            );
-        }
-
-        if ($table->getNumHiddenMembers() > 0) {
-            $searchTpl->setCurrentBlock('caption_block');
-            $searchTpl->setVariable(
-                'TXT_LIST_MEMBERS_NOT_AVAILABLE',
-                $this->lng->txt('mail_crs_list_members_not_available')
-            );
-            $searchTpl->parseCurrentBlock();
-        }
-
-        $searchTpl->setVariable('TXT_MARKED_ENTRIES', $this->lng->txt('marked_entries'));
-        $searchTpl->setVariable('TABLE', $this->ui_renderer->render($table->getComponent()));
-        $this->tpl->setContent($searchTpl->get());
-
-        if ($this->isDefaultRequestContext()) {
-            $this->tpl->printToStdout();
-        }
-    }
-
-    public function executeCommand(): bool
-    {
-        $forward_class = $this->ctrl->getNextClass($this) ?? '';
-        switch (strtolower($forward_class)) {
-            case strtolower(ilBuddySystemGUI::class):
-                if (!ilBuddySystem::getInstance()->isEnabled()) {
-                    $this->error->raiseError($this->lng->txt('msg_no_perm_read'), $this->error->MESSAGE);
-                }
-
-                $this->ctrl->saveParameter($this, 'search_' . $this->getObjectType());
-
-                $this->ctrl->setReturn($this, 'showMembers');
-                $this->ctrl->forwardCommand(new ilBuddySystemGUI());
-                break;
-
-            default:
-                if (!($cmd = $this->ctrl->getCmd())) {
-                    $cmd = 'showMyObjects';
-                }
-
-                $this->$cmd();
-                break;
-        }
-
-        return true;
+        $this->ctrl->setParameterByClass(ilMailGUI::class, 'type', ilMailFormGUI::MAIL_FORM_TYPE_SEARCH_RESULT);
+        $this->ctrl->redirectByClass(ilMailGUI::class);
     }
 
     private function handleMailSearchObjectActions(): void
@@ -474,35 +494,150 @@ abstract class ilMailSearchObjectGUI
         $query = $this->http->wrapper()->query();
 
         if (!$query->has('contact_mailinglist_search_action')) {
+            $this->ctrl->redirect($this, self::CMD_SHOW_MY_OBJECTS);
             return;
         }
 
         $action = $query->retrieve('contact_mailinglist_search_action', $this->refinery->to()->string());
 
-        switch ($action) {
-            case 'mailObjects':
-                $this->mailObjects();
-                break;
-
-            case 'mailMembers':
-                $this->mailMembers();
-                break;
-
-            case 'shareObjects':
-                $this->shareObjects();
-                break;
-
-            case 'shareMembers':
-                $this->shareMembers();
-                break;
-
-            case 'showMembers':
-                $this->showMembers();
-                break;
-
-            default:
-                $this->ctrl->redirect($this, 'showMyObjects');
-                break;
+        if (
+            in_array($action, [self::ACTION_MAIL_OBJECTS, self::ACTION_MAIL_MEMBERS], true)
+            && !$this->isMailActionAllowed()
+        ) {
+            $this->error->raiseError($this->lng->txt('msg_no_perm_read'), $this->error->MESSAGE);
         }
+
+        if (
+            in_array($action, [self::ACTION_SHARE_OBJECTS, self::ACTION_SHARE_MEMBERS], true)
+            && !$this->isShareActionAllowed()
+        ) {
+            $this->error->raiseError($this->lng->txt('msg_no_perm_read'), $this->error->MESSAGE);
+        }
+
+        match ($action) {
+            self::ACTION_MAIL_OBJECTS => $this->mailObjects(),
+            self::ACTION_MAIL_MEMBERS => $this->mailMembers(),
+            self::ACTION_SHARE_OBJECTS => $this->shareObjects(),
+            self::ACTION_SHARE_MEMBERS => $this->shareMembers(),
+            self::ACTION_SHOW_MEMBERS => $this->showMembers(),
+            default => $this->ctrl->redirect($this, self::CMD_SHOW_MY_OBJECTS),
+        };
+    }
+
+    private function isMailActionAllowed(): bool
+    {
+        return $this->getContext() === self::CONTEXT_MAIL && $this->mailing_allowed;
+    }
+
+    private function isShareActionAllowed(): bool
+    {
+        return $this->getContext() === self::CONTEXT_WORKSPACE
+            && $this->wsp_access_handler !== null
+            && $this->wsp_node_id !== null;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function retrieveObjectIdsFromQuery(): array
+    {
+        $obj_ids = $this->resolveObjectIds(
+            $this->retrieveIdsFromQuery('contact_mailinglist_search_obj_ids')
+        );
+        if ($obj_ids !== []) {
+            return $obj_ids;
+        }
+
+        return $this->resolveObjectIds(
+            $this->retrieveIdsFromQuery('search_' . $this->getObjectType())
+        );
+    }
+
+    /**
+     * @param list<int>|string $obj_ids
+     * @return list<int>
+     */
+    private function resolveObjectIds(array|string $obj_ids): array
+    {
+        $own_obj_ids = $this->getOwnObjectIds();
+        if ($obj_ids === 'ALL_OBJECTS') {
+            return $own_obj_ids;
+        }
+
+        return array_values(array_intersect($obj_ids, $own_obj_ids));
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function getOwnObjectIds(): array
+    {
+        return array_values(array_filter(
+            ilParticipants::_getMembershipByType($this->user->getId(), [$this->getObjectType()]),
+            ilObject::_hasUntrashedReference(...),
+        ));
+    }
+
+    /**
+     * @param list<int>|string $usr_ids
+     * @return list<int>
+     */
+    private function resolveUserIds(array|string $usr_ids): array
+    {
+        $allowed_usr_ids = $this->collectMemberIds($this->retrieveObjectIdsFromQuery());
+        if ($usr_ids === 'ALL_OBJECTS') {
+            return $allowed_usr_ids;
+        }
+
+        return array_values(array_intersect($usr_ids, $allowed_usr_ids));
+    }
+
+    /**
+     * @param list<int> $obj_ids
+     * @return list<int>
+     */
+    private function collectMemberIds(array $obj_ids): array
+    {
+        $usr_ids = [];
+        foreach ($obj_ids as $obj_id) {
+            $ref_ids = new ObjectId($obj_id)->toReferenceIds();
+            if ($ref_ids === []) {
+                continue;
+            }
+
+            foreach (ilParticipants::getInstance($ref_ids[0]->toInt())->getParticipants() as $participant) {
+                if (ilObjUser::_lookupActive($participant)) {
+                    $usr_ids[] = $participant;
+                }
+            }
+        }
+
+        return array_values(array_unique($usr_ids));
+    }
+
+    /**
+     * @return list<int>|string
+     */
+    private function retrieveIdsFromQuery(string $key): array|string
+    {
+        return $this->http->wrapper()->query()->retrieve(
+            $key,
+            $this->refinery->byTrying([
+                $this->refinery->kindlyTo()->listOf($this->refinery->kindlyTo()->int()),
+                $this->refinery->custom()->transformation(
+                    static function (mixed $value): array|string {
+                        if ($value === ['ALL_OBJECTS']) {
+                            return 'ALL_OBJECTS';
+                        }
+                        if (!is_string($value) || $value === '') {
+                            throw new Exception('invalid ids');
+                        }
+
+                        return array_map(intval(...), explode(',', $value));
+                    }
+                ),
+                $this->refinery->always([])
+            ])
+        );
     }
 }

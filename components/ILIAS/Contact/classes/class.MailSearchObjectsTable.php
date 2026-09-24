@@ -35,8 +35,6 @@ class MailSearchObjectsTable implements DataRetrieval
 {
     private readonly ServerRequestInterface|RequestInterface $request;
     private readonly DataFactory $data_factory;
-    /** @var array<string, string> */
-    private readonly array $mode;
     private int $num_hidden_members = 0;
     private bool $mailing_allowed = false;
     /** @var list<array<string, mixed>>|null */
@@ -44,40 +42,18 @@ class MailSearchObjectsTable implements DataRetrieval
 
     public function __construct(
         private readonly ilObjUser $user,
-        private readonly string $type,
-        private readonly string $context,
+        private readonly ilMailSearchObjectGUI $parent_gui,
         private readonly ilCtrl $ctrl,
         private readonly ilLanguage $lng,
         private readonly Factory $ui_factory,
         GlobalHttpState $http,
         private readonly ilTree $tree,
-        private readonly ilRbacSystem $rbac_system,
     ) {
         $this->request = $http->request();
         $this->data_factory = new DataFactory();
 
         $this->lng->loadLanguageModule('crs');
         $this->lng->loadLanguageModule('buddysystem');
-
-        $this->mode = match ($this->type) {
-            'crs' => [
-                'short' => 'crs',
-                'long' => 'course',
-                'checkbox' => 'search_crs',
-                'tableprefix' => 'crstable',
-                'lng_mail' => $this->lng->txt('mail_my_courses'),
-                'lng_view' => 'myobjects',
-            ],
-            'grp' => [
-                'short' => 'grp',
-                'long' => 'group',
-                'checkbox' => 'search_grp',
-                'tableprefix' => 'grptable',
-                'lng_mail' => $this->lng->txt('mail_my_groups'),
-                'view' => 'myobjects',
-            ],
-            default => [],
-        };
     }
 
     public function setMailingAllowed(bool $mailing_allowed): void
@@ -87,16 +63,13 @@ class MailSearchObjectsTable implements DataRetrieval
 
     public function getComponent(): Data
     {
-        $columns = $this->getColumns();
-        $actions = $this->getActions();
-
         return $this->ui_factory->table()
             ->data(
                 $this,
-                $this->mode['lng_mail'],
-                $columns,
+                $this->parent_gui->getSearchTableTitle(),
+                $this->getColumns(),
             )
-            ->withActions($actions)
+            ->withActions($this->getActions())
             ->withRequest($this->request);
     }
 
@@ -140,7 +113,7 @@ class MailSearchObjectsTable implements DataRetrieval
         return [
             'obj_title' => $this->ui_factory->table()
                 ->column()
-                ->text($this->mode['lng_mail'])
+                ->text($this->parent_gui->getSearchTableTitle())
                 ->withIsSortable(true),
             'obj_path' => $this->ui_factory->table()
                 ->column()
@@ -159,12 +132,11 @@ class MailSearchObjectsTable implements DataRetrieval
     private function getActions(): array
     {
         $query_params_namespace = ['contact', 'mailinglist', 'search'];
-        $exec_class = $this->type == 'crs' ? ilMailSearchCoursesGUI::class : ilMailSearchGroupsGUI::class;
 
         $uri = $this->data_factory->uri(
-            ILIAS_HTTP_PATH . '/' . $this->ctrl->getLinkTargetByClass(
-                $exec_class,
-                'handleMailSearchObjectActions',
+            ILIAS_HTTP_PATH . '/' . $this->ctrl->getLinkTarget(
+                $this->parent_gui,
+                ilMailSearchObjectGUI::CMD_HANDLE_MAIL_SEARCH_OBJECT_ACTIONS,
             ),
         );
 
@@ -182,23 +154,23 @@ class MailSearchObjectsTable implements DataRetrieval
 
         $actions = [];
 
-        if ($this->context === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isMailingAllowed()) {
-            $actions['mail'] = $this->ui_factory->table()->action()->standard(
+        if ($this->parent_gui->getContext() === ilMailSearchObjectGUI::CONTEXT_MAIL && $this->isMailingAllowed()) {
+            $actions[ilMailSearchObjectGUI::ACTION_MAIL_OBJECTS] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('mail_members'),
-                $url_builder->withParameter($action_parameter_token_copy, 'mailObjects'),
+                $url_builder->withParameter($action_parameter_token_copy, ilMailSearchObjectGUI::ACTION_MAIL_OBJECTS),
                 $row_id_token,
             );
-        } elseif ($this->context === 'wsp') {
-            $actions['share'] = $this->ui_factory->table()->action()->standard(
+        } elseif ($this->parent_gui->getContext() === ilMailSearchObjectGUI::CONTEXT_WORKSPACE) {
+            $actions[ilMailSearchObjectGUI::ACTION_SHARE_OBJECTS] = $this->ui_factory->table()->action()->standard(
                 $this->lng->txt('wsp_share_with_members'),
-                $url_builder->withParameter($action_parameter_token_copy, 'shareObjects'),
+                $url_builder->withParameter($action_parameter_token_copy, ilMailSearchObjectGUI::ACTION_SHARE_OBJECTS),
                 $row_id_token,
             );
         }
 
-        $actions['showMembers'] = $this->ui_factory->table()->action()->standard(
+        $actions[ilMailSearchObjectGUI::ACTION_SHOW_MEMBERS] = $this->ui_factory->table()->action()->standard(
             $this->lng->txt('mail_list_members'),
-            $url_builder->withParameter($action_parameter_token_copy, 'showMembers'),
+            $url_builder->withParameter($action_parameter_token_copy, ilMailSearchObjectGUI::ACTION_SHOW_MEMBERS),
             $row_id_token,
         );
 
@@ -214,7 +186,7 @@ class MailSearchObjectsTable implements DataRetrieval
         $this->records = [];
         $counter = 0;
 
-        $objs_ids = ilParticipants::_getMembershipByType($this->user->getId(), [$this->type]);
+        $objs_ids = ilParticipants::_getMembershipByType($this->user->getId(), [$this->parent_gui->getObjectType()]);
         if ($objs_ids === []) {
             return;
         }
@@ -230,7 +202,7 @@ class MailSearchObjectsTable implements DataRetrieval
                 ilMailGlobalServices::getMailObjectRefId(),
             );
 
-            if ($has_untrashed_references && ($can_send_mails || $this->doesExposeMembers($object))) {
+            if ($has_untrashed_references && ($can_send_mails || $this->parent_gui->doesExposeMembers($object))) {
                 $participants = ilParticipants::getInstance($object->getRefId());
 
                 $usr_ids = array_filter(
@@ -238,39 +210,21 @@ class MailSearchObjectsTable implements DataRetrieval
                     ilObjUser::_lookupActive(...),
                 );
 
-                $hiddenMembers = false;
+                $hidden_members = false;
                 if (!$object->getShowMembers()) {
                     ++$this->num_hidden_members;
-                    $hiddenMembers = true;
+                    $hidden_members = true;
                 }
 
                 $this->records[$counter]['obj_id'] = $object->getId();
                 $this->records[$counter]['obj_title'] = $object->getTitle();
                 $this->records[$counter]['obj_cnt_members'] = count($usr_ids);
                 $this->records[$counter]['obj_path'] = $this->getObjectPath($object);
-                $this->records[$counter]['hidden_members'] = $hiddenMembers;
+                $this->records[$counter]['hidden_members'] = $hidden_members;
 
                 ++$counter;
             }
         }
-    }
-
-    private function doesExposeMembers(ilObject $object): bool
-    {
-        $isOffline = true;
-        $showMemberListEnabled = true;
-
-        if ($object->getType() === 'crs' && method_exists($object, 'isActivated')) {
-            $isOffline = !$object->isActivated();
-        }
-
-        if (method_exists($object, 'getShowMembers')) {
-            $showMemberListEnabled = (bool) $object->getShowMembers();
-        }
-
-        $isPrivilegedUser = $this->rbac_system->checkAccess('write', $object->getRefId());
-
-        return (!$isOffline && $showMemberListEnabled) || $isPrivilegedUser;
     }
 
     private function getCurrentObject(int $obj_id): ilObjCourse|ilObjGroup
